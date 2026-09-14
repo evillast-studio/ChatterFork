@@ -1,0 +1,46 @@
+{
+    "cli": {
+        "version": ">= 5.4.0"
+    },
+    "build": {
+        "development": {
+            "distribution": "internal",
+            "android": {
+                "gradleCommand": ":app:assembleDebug"
+            },
+            "ios": {
+                "buildConfiguration": "Debug"
+            }
+        },
+        "preview": {
+            "distribution": "internal"
+        },
+        "preview2": {
+            "android": {
+                "gradleCommand": ":app:assembleRelease"
+            }
+        },
+        "kirin710": {
+            "android": {
+                "buildType": "apk",
+                "gradleCommand": ":app:assembleRelease",
+                "image": "latest"
+            },
+            "env": {
+                "EAS_BUILD_PROFILE": "kirin710",
+                "KIRIN710_BUILD": "1"
+            }
+        },
+        "production": {
+            "android": {
+                "buildType": "apk"
+            },
+            "env": {
+                "ANDROID_SDK_ROOT": "/point this to your Android SDK directory"
+            }
+        }
+    },
+    "submit": {
+        "production": {}
+    }
+}
