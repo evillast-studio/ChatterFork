@@ -1,78 +1,163 @@
-name: Build APK Kirin 710
+name: Build APK (Kirin 710, fast)
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches:
+      - main
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch: {}
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+    concurrency:
+      group: build-apk-${{ github.ref }}
+      cancel-in-progress: true
 
     steps:
-      - name: Checkout código
+      - name: Checkout (shallow, rápido)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Setup Node.js 20
+      # Libera espacio en disco del runner: quita SDKs/toolchains preinstalados
+      # que no usamos (dotnet, Haskell, CodeQL, etc). OJO: NO tocamos
+      # /usr/local/lib/android/sdk/ndk esta vez, porque este build SÍ necesita
+      # el NDK real para compilar cui-llama.rn desde fuente con el plugin
+      # kirin710 (a diferencia del workflow anterior que usaba .so prebuilt).
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /usr/local/share/boost
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Add swap
+        run: |
+          sudo swapoff -a
+          sudo fallocate -l 4G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Stop unneeded services
+        run: |
+          sudo systemctl stop mono-xsp4.service 2>/dev/null || true
+          sudo systemctl stop mysql.service 2>/dev/null || true
+          sudo systemctl stop postgresql.service 2>/dev/null || true
+          sudo systemctl stop docker.service 2>/dev/null || true
+          sudo systemctl stop snapd.service 2>/dev/null || true
+          free -h
+
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: 20
+          cache: npm
 
-      - name: Setup Java 17
+      - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
+          distribution: temurin
           java-version: '17'
-          distribution: 'temurin'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
-      - name: Instalar NDK 27
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      # ccache acelera re-compilaciones del C++ nativo de llama.cpp entre runs.
+      # Especialmente valioso acá porque este build SIEMPRE compila desde
+      # fuente (el plugin kirin710 necesita eso para aplicar sus flags).
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ndk-kirin710-${{ runner.os }}
+          max-size: 2G
+
+      # react-native-gesture-handler ~2.32.0 no genera bien la carpeta
+      # codegen/jni que RN 0.86 + Nueva Arquitectura espera (causa
+      # "which is not an existing directory" en CMake más adelante).
+      - name: Update react-native-gesture-handler for RN 0.86 New Arch compat
+        run: npm install react-native-gesture-handler@latest --no-audit --no-fund --save-exact false
+
+      # El plugin expo-build-plugins/kirin710.plugin.js parchea automáticamente
+      # el CMakeLists.txt de cui-llama.rn durante este prebuild, forzando
+      # -march=armv8-a -mtune=cortex-a73, deshabilitando dotprod (el A73 no lo
+      # soporta, causa SIGILL) y habilitando NEON explícitamente. abiFilters
+      # arm64-v8a ya viene fijado en app.config.js.
+      - name: Expo prebuild (aplica el patch de kirin710.plugin.js)
+        run: npx expo prebuild --platform android --no-install --clean
+
+      # Verificación explícita de que el plugin realmente parcheó el CMake,
+      # para fallar rápido y claro acá en vez de descubrirlo 30 min después
+      # dentro del build de Gradle si algo cambió de ruta/versión.
+      - name: Verify kirin710 CMake patch was applied
         run: |
-          echo "y" | sdkmanager "ndk;27.2.12479018" --sdk_root=$ANDROID_SDK_ROOT
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> $GITHUB_ENV
-
-      - name: Instalar dependencias npm
-        run: npm ci
-
-      - name: Expo prebuild
-        run: npx expo prebuild --platform android --clean
-        env:
-          EXPO_NO_TELEMETRY: 1
-
-      - name: Verificar parche Kirin 710
-        run: |
-          if grep -q "__KIRIN710_INJECTED__" node_modules/cui-llama.rn/android/CMakeLists.txt; then
-            echo "✓ Parche Kirin 710 aplicado"
+          CMAKE_FILE="node_modules/cui-llama.rn/android/src/main/CMakeLists.txt"
+          if [ ! -f "$CMAKE_FILE" ]; then
+            echo "::error::No se encontró $CMAKE_FILE"
+            exit 1
+          fi
+          if grep -q "__KIRIN710_INJECTED__" "$CMAKE_FILE"; then
+            echo "✓ Patch de Kirin 710 aplicado correctamente"
+            grep -A 3 "K710_C_FLAGS" "$CMAKE_FILE" || true
           else
-            echo "⚠ Parche NO encontrado"
+            echo "::error::El patch de kirin710.plugin.js NO se aplicó a $CMAKE_FILE"
+            exit 1
           fi
 
-      - name: Hacer ejecutable gradlew
-        run: chmod +x android/gradlew
-
-      - name: Build APK Release
+      # Fuerza generación de codegen de todos los módulos con Turbo Modules
+      # (vector-icons, @vali98/*, etc.) antes de que Gradle configure CMake.
+      - name: Generate React Native codegen for all native modules
+        working-directory: android
         run: |
-          cd android
+          chmod +x ./gradlew
+          ./gradlew generateCodegenArtifactsFromSchema \
+            -PreactNativeArchitectures=arm64-v8a \
+            --no-daemon \
+            --continue || true
+
+      # Build real. Sin -PrnllamaBuildFromSource=false esta vez: queremos que
+      # SÍ compile desde fuente, para que las flags del plugin kirin710 se
+      # apliquen de verdad. Esto tarda más (~30-40 min) que usar .so prebuilt,
+      # pero es el punto de este workflow: un .so específico para Cortex-A73.
+      - name: Build APK (release, arm64-v8a, optimizado para Kirin 710)
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
           ./gradlew assembleRelease \
-            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=512m" \
-            -Dorg.gradle.parallel=true \
-            -Dorg.gradle.caching=true
-        env:
-          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
-
-      - name: Encontrar APK
-        id: find_apk
-        run: |
-          APK=$(find android/app/build/outputs/apk -name "*.apk" | head -1)
-          echo "apk_path=$APK" >> $GITHUB_OUTPUT
-          echo "APK: $APK ($(du -sh $APK | cut -f1))"
+            -PreactNativeArchitectures=arm64-v8a \
+            -Dorg.gradle.jvmargs="-Xmx10g -XX:MaxMetaspaceSize=1g" \
+            -Dorg.gradle.daemon=true \
+            -Dorg.gradle.configureondemand=true \
+            -Pandroid.enableR8.fullMode=false \
+            -x lint \
+            -x test \
+            -x testDebugUnitTest \
+            -x testReleaseUnitTest \
+            -x lintVitalRelease \
+            --build-cache
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ChatterUI-Kirin710-${{ github.run_number }}
-          path: ${{ steps.find_apk.outputs.apk_path }}
-          retention-days: 30
+          name: chatterui-kirin710-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 14
