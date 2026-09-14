@@ -33,7 +33,8 @@ if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
     message(STATUS "")
 
     set(K710_C_FLAGS
-        -march=armv8-a          # ARMv8-A base — seguro en A73
+        -march=armv8-a+crc      # ARMv8-A base + CRC — CRC confirmado disponible
+                                 # por defecto en cortex-a73 según docs de GCC.
         -mtune=cortex-a73       # Scheduling optimizado para pipeline A73
         -O3                     # Máxima optimización
         -ffast-math             # Relajar precisión IEEE para más velocidad
@@ -42,6 +43,9 @@ if(ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a")
         -fvectorize             # Vectorización automática (NEON)
         -fomit-frame-pointer    # Liberar registro extra
         -fno-stack-protector    # Quitar stack canary (release only)
+        # NO SE AGREGA +crypto: extensión opcional bajo licencia separada de
+        # ARM, no confirmable sin specs exactas del Kirin 710. Riesgo de SIGILL
+        # sin beneficio real para matmul (crypto acelera AES/SHA, no álgebra).
     )
     string(JOIN " " K710_FLAGS_STR \${K710_C_FLAGS})
 
@@ -72,8 +76,15 @@ endif()
 
 function patchCMakeLists(projectRoot) {
     // Buscar CMakeLists en cui-llama.rn
+    // NOTA: la ruta real dentro del paquete es android/src/main/CMakeLists.txt,
+    // no android/CMakeLists.txt (confirmado corriendo el CI real contra
+    // cui-llama.rn@1.12.2 — ver logs del run que falló con "no encontrado").
+    // Se dejan las rutas viejas como fallback por si una versión futura del
+    // paquete reorganiza la estructura de carpetas otra vez.
     const candidates = [
+        path.join(projectRoot, 'node_modules', 'cui-llama.rn', 'android', 'src', 'main', 'CMakeLists.txt'),
         path.join(projectRoot, 'node_modules', 'cui-llama.rn', 'android', 'CMakeLists.txt'),
+        path.join(projectRoot, 'node_modules', 'llama.rn', 'android', 'src', 'main', 'CMakeLists.txt'),
         path.join(projectRoot, 'node_modules', 'llama.rn', 'android', 'CMakeLists.txt'),
     ]
 
