@@ -327,7 +327,7 @@ const ModelSettings: React.FC<ModelSettingsProp> = ({ modelImporting, modelLoadi
             {showGPUSlider && (
                 <ThemedSlider label={t('model.gpulayers')} value={config.gpu_layers}
                     onValueChange={(v) => setConfig({ ...config, gpu_layers: v })}
-                    min={0} max={100} step={1} disabled={modelImporting || modelLoading} />
+                    min={0} max={999} step={1} disabled={modelImporting || modelLoading} />
             )}
 
             {/* ── Math & Precision ── */}
@@ -358,13 +358,6 @@ const ModelSettings: React.FC<ModelSettingsProp> = ({ modelImporting, modelLoadi
             <ThemedSlider label={t('model.ubatch')} value={config.ubatch}
                 onValueChange={(v) => setConfig({ ...config, ubatch: v })}
                 min={1} max={2048} step={1} disabled={modelImporting || modelLoading} />
-            <ThemedSlider label={t('model.ropefreqbase')} value={config.rope_freq_base}
-                onValueChange={(v) => setConfig({ ...config, rope_freq_base: v })}
-                min={0} max={1000000} step={1000} disabled={modelImporting || modelLoading} />
-            <ThemedSlider label={t('model.ropefreqscale')}
-                value={Math.round(config.rope_freq_scale * 100)}
-                onValueChange={(v) => setConfig({ ...config, rope_freq_scale: v / 100 })}
-                min={0} max={100} step={1} disabled={modelImporting || modelLoading} />
 
             {/* ── Advanced Settings ── */}
             <SectionTitle>{t('model.settings.advanced')}</SectionTitle>
