@@ -27,7 +27,8 @@ const ChatOptions: React.FC<ChatOptionsProps> = ({ disabled }) => {
     return (
         <ContextMenu
             disabled={disabled}
-            buttons={
+            buttons={[
+                {
                     onPress: (close) => {
                         close()
                         router.back()
