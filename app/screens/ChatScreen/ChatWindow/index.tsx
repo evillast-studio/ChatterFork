@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { FlatList } from 'react-native'
+import { FlatList, View } from 'react-native'
 import { useMMKVBoolean } from 'react-native-mmkv'
 import { useShallow } from 'zustand/react/shallow'
 
